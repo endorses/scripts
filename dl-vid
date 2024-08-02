@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+# Use yt-dlp to download videos from a list of URLs from a provided file ($1)
+
+declare -a url_array
+let i=0
+while IFS=$'\n' read -r line_data; do
+    url_array[i]="${line_data}"
+    echo "${url_array[i]}"
+    yt-dlp "${line_data}"
+    ((++i))
+done < $1

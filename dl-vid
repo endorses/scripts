@@ -4,7 +4,7 @@
 
 let i=0
 while IFS=$'\n' read -r line_data; do
-    echo "Start ownloading: ${line_data}"
+    echo "Downloading: ${line_data}"
     yt-dlp "${line_data}"
     ((++i))
 done < $1

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+# Soundboard powered by dmenu
+#
+# Choose a folder full of soundfiles below, create a keybind for this script.
+
+sound_dir="$HOME/sounds/"
+
+selected_file=$(ls -1 "$sound_dir" | dmenu  -l 20 -c -p Soundboard)
+
+if [ -n "$selected_file" ]; then
+    paplay --volume 50000 $sound_dir"$selected_file"
+fi

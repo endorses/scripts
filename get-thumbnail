@@ -1,0 +1,4 @@
+#!/usr/bin/bash
+
+url="$(yt-dlp --get-thumbnail $1)"
+i3-msg "exec curl $url 2>/dev/null | imv - &"

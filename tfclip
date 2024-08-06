@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+
+selected_mode=$( printf 'bold\nitalic\nflip\nreverse' | dmenu  -l 20 -c -p Transform)
+
+xclip -o -sel p | transform_text.py --$selected_mode | xclip -i -selection clipboard

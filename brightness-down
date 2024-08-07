@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+
+xrandr --output eDP-1 --brightness 0.4
+xrandr --output HDMI-1-0 --brightness 0.4

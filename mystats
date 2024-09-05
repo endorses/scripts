@@ -1,0 +1,3 @@
+#!/usr/bin/bash
+
+i3-msg "workspace 10:; append_layout ~/.config/i3/stats.json; exec st htop; exec st watch sensors; exec st fish"

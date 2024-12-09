@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+xclip -o -sel p | qrencode -s 10 -t SVG --svg-path -o - | feh -Z -

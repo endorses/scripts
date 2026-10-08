@@ -1,3 +1,46 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-xclip -o -sel c | qrencode -s 10 -t SVG --svg-path -o - | feh -Z -
+usage() {
+    cat <<'EOF'
+Usage: clip2qr [--clipboard | --primary]
+
+Display the clipboard as a QR code for scanning with a phone.
+Use --primary to encode the selected text instead.
+
+Requires: xclip, qrencode (with PNG support), feh.
+EOF
+}
+
+die() {
+    printf 'clip2qr: %s\n' "$*" >&2
+    exit 1
+}
+
+selection=clipboard
+for arg in "$@"; do
+    case "$arg" in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    --clipboard) selection=clipboard ;;
+    --primary) selection=primary ;;
+    *) die "unknown argument: $arg (see --help)" ;;
+    esac
+done
+
+for dependency in xclip qrencode feh; do
+    command -v "$dependency" >/dev/null || die "required command not found: $dependency"
+done
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/clip2qr.XXXXXXXX")
+trap 'rm -rf -- "$tmp_dir"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+xclip -o -selection "$selection" >"$tmp_dir/input" || die "could not read the $selection selection"
+[[ -s "$tmp_dir/input" ]] || die "the $selection selection is empty"
+qrencode -s 10 -t PNG -o "$tmp_dir/clipboard.png" <"$tmp_dir/input" || die 'could not encode the text as a QR code'
+feh -Z -- "$tmp_dir/clipboard.png" || die 'could not display the QR code'

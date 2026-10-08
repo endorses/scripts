@@ -1,5 +1,65 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
+set -euo pipefail
 
-selected_mode=$( printf 'bold\nitalic\nflip\nreverse' | dmenu  -l 20 -c -p Transform)
+usage() {
+    cat <<'EOF'
+Usage: tfclip [--primary | --clipboard] [bold | italic | flip | reverse]
 
-xclip -o -sel p | transform_text.py --$selected_mode | xclip -i -selection clipboard
+Transform selected text and copy the result to the clipboard.
+With no mode, choose one using dmenu. The default input is the X11
+primary selection; use --clipboard to transform the clipboard instead.
+
+Requires: xclip, transform_text.py, and dmenu when choosing a mode.
+EOF
+}
+
+die() {
+    printf 'tfclip: %s\n' "$*" >&2
+    exit 1
+}
+
+selection=primary
+mode=
+for arg in "$@"; do
+    case "$arg" in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    --primary) selection=primary ;;
+    --clipboard) selection=clipboard ;;
+    bold | italic | flip | reverse)
+        [[ -z "$mode" ]] || die 'choose only one mode'
+        mode=$arg
+        ;;
+    *) die "unknown argument: $arg (see --help)" ;;
+    esac
+done
+
+command -v xclip >/dev/null || die 'required command not found: xclip'
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+transformer="$script_dir/transform_text.py"
+if [[ ! -x "$transformer" ]]; then
+    transformer=$(command -v transform_text.py) || die 'required command not found: transform_text.py'
+fi
+
+if [[ -z "$mode" ]]; then
+    command -v dmenu >/dev/null || die 'required command not found: dmenu'
+    mode=$(printf '%s\n' bold italic flip reverse | dmenu -l 4 -p Transform) || exit 0
+    [[ -n "$mode" ]] || exit 0
+    case "$mode" in
+    bold | italic | flip | reverse) ;;
+    *) die "unknown mode: $mode" ;;
+    esac
+fi
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/tfclip.XXXXXXXX")
+trap 'rm -rf -- "$tmp_dir"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+xclip -o -selection "$selection" >"$tmp_dir/input" || die "could not read the $selection selection"
+[[ -s "$tmp_dir/input" ]] || die "the $selection selection is empty"
+"$transformer" "--$mode" <"$tmp_dir/input" >"$tmp_dir/output" || die 'text transformation failed'
+xclip -i -selection clipboard <"$tmp_dir/output" || die 'could not write to the clipboard'

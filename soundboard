@@ -1,9 +1,57 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-sound_dir="$HOME/sounds/"
+usage() {
+    cat <<'EOF'
+Usage: soundboard [DIRECTORY]
 
-selected_file=$(ls -1 "$sound_dir" | dmenu  -l 20 -c -p Soundboard)
+Choose a sound with dmenu and play it using paplay.
+DIRECTORY defaults to SOUNDBOARD_DIR, or ~/sounds when unset.
+SOUNDBOARD_VOLUME sets the volume (0–65536; default: 50000).
+Filenames containing newlines are omitted from the menu.
 
-if [ -n "$selected_file" ]; then
-    paplay --volume 50000 $sound_dir"$selected_file"
+Requires: dmenu, paplay, sort.
+EOF
+}
+
+die() {
+    printf 'soundboard: %s\n' "$*" >&2
+    exit 1
+}
+
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    usage
+    exit 0
 fi
+[[ $# -le 1 ]] || die 'expected at most one directory (see --help)'
+sound_dir=${1:-${SOUNDBOARD_DIR:-$HOME/sounds}}
+volume=${SOUNDBOARD_VOLUME:-50000}
+[[ "$volume" =~ ^[0-9]{1,5}$ ]] || die 'SOUNDBOARD_VOLUME must be an integer from 0 to 65536'
+((10#$volume <= 65536)) || die 'SOUNDBOARD_VOLUME must be an integer from 0 to 65536'
+[[ -d "$sound_dir" && -r "$sound_dir" && -x "$sound_dir" ]] || die "cannot read sound directory: $sound_dir"
+
+for dependency in dmenu paplay sort; do
+    command -v "$dependency" >/dev/null || die "required command not found: $dependency"
+done
+
+shopt -s nullglob dotglob
+files=()
+for file in "$sound_dir"/*; do
+    [[ -f "$file" && -r "$file" ]] || continue
+    name=${file##*/}
+    [[ "$name" != *$'\n'* ]] || continue
+    files+=("$name")
+done
+[[ ${#files[@]} -gt 0 ]] || die "no readable sound files in: $sound_dir"
+
+selected_file=$(printf '%s\n' "${files[@]}" | LC_ALL=C sort | dmenu -l 20 -p Soundboard) || exit 0
+[[ -n "$selected_file" ]] || exit 0
+
+# dmenu allows typed input; only play files that were offered in the menu.
+for file in "${files[@]}"; do
+    if [[ "$selected_file" == "$file" ]]; then
+        paplay --volume "$volume" -- "$sound_dir/$file" || die "could not play: $file"
+        exit 0
+    fi
+done
+die "unknown sound: $selected_file"

@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-
-xrandr | grep " connected" | awk '{ print $1 }' | while read -r monitor; do
-    xrandr --output $monitor --brightness 1
-done

@@ -1,3 +1,0 @@
-#!/usr/bin/bash
-
-i3-msg "workspace 10:; append_layout ~/.config/i3/stats.json; exec kitty htop; exec kitty watch sensors; exec kitty fish"

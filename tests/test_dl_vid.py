@@ -79,7 +79,7 @@ class DownloadQueueTests(unittest.TestCase):
             except ProcessLookupError:
                 pass
 
-    def start(self, *args, watch=True, links=None):
+    def start(self, *args, tail=True, links=None):
         command = [
             sys.executable,
             str(SCRIPT),
@@ -88,8 +88,8 @@ class DownloadQueueTests(unittest.TestCase):
             "--retry-delay",
             "0.04",
         ]
-        if watch:
-            command.append("--watch")
+        if tail:
+            command.append("--tail")
         command.extend([str(links or self.links), *args])
         process = subprocess.Popen(
             command,
@@ -139,7 +139,7 @@ class DownloadQueueTests(unittest.TestCase):
         self.links.write_text(
             "# comment\n; comment\n] comment\n\nhttps://example.com/one\nhttps://example.com/one\nhttps://example.com/two"
         )
-        process = self.start(watch=False)
+        process = self.start(tail=False)
         self.finish_process(process)
         self.assertEqual(
             [call["url"] for call in self.calls()],
@@ -151,7 +151,7 @@ class DownloadQueueTests(unittest.TestCase):
         self.links.write_text(
             "\ufeff# saved list\nhttps://example.com/one#fragment # note\n"
         )
-        self.finish_process(self.start(watch=False))
+        self.finish_process(self.start(tail=False))
         self.assertEqual(self.calls()[0]["url"], "https://example.com/one#fragment")
 
     def test_append_during_download_then_append_after_queue_is_empty(self):
@@ -189,9 +189,9 @@ class DownloadQueueTests(unittest.TestCase):
 
     def test_restart_skips_completed_urls(self):
         self.links.write_text("https://example.com/one\n")
-        self.finish_process(self.start(watch=False))
+        self.finish_process(self.start(tail=False))
         self.links.write_text("https://example.com/one\nhttps://example.com/two\n")
-        self.finish_process(self.start(watch=False))
+        self.finish_process(self.start(tail=False))
         self.assertEqual(
             [call["url"] for call in self.calls()],
             ["https://example.com/one", "https://example.com/two"],
@@ -202,11 +202,11 @@ class DownloadQueueTests(unittest.TestCase):
         other = "https://example.com/other"
         self.rules.write_text(json.dumps({failed: {"fail_attempts": 2}}))
         self.links.write_text(failed + "\n" + other + "\n")
-        self.finish_process(self.start(watch=False))
+        self.finish_process(self.start(tail=False))
         self.assertEqual(
             [call["url"] for call in self.calls()], [failed, other, failed, failed]
         )
-        self.finish_process(self.start(watch=False))
+        self.finish_process(self.start(tail=False))
         self.assertEqual(len(self.calls()), 4)
 
     def test_exhausted_url_does_not_spin_and_does_not_block_new_link(self):
@@ -230,9 +230,9 @@ class DownloadQueueTests(unittest.TestCase):
         url = "https://example.com/broken"
         self.rules.write_text(json.dumps({url: {"fail_attempts": 2}}))
         self.links.write_text(url + "\n")
-        self.finish_process(self.start("--max-attempts", "2", watch=False), expected=1)
+        self.finish_process(self.start("--max-attempts", "2", tail=False), expected=1)
         self.assertEqual(len(self.calls()), 2)
-        self.finish_process(self.start(watch=False))
+        self.finish_process(self.start(tail=False))
         self.assertEqual(len(self.calls()), 3)
 
     def test_removing_failed_link_stops_pending_retry(self):
@@ -258,13 +258,13 @@ class DownloadQueueTests(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(child_pid, 0)
         (self.root / "release").touch()
-        self.finish_process(self.start(watch=False))
+        self.finish_process(self.start(tail=False))
         self.assertEqual(len(self.calls()), 2)
 
     def test_same_state_cannot_have_two_workers(self):
         first = self.start()
         time.sleep(0.1)
-        second = self.start(watch=False)
+        second = self.start(tail=False)
         _, stderr = self.finish_process(second, expected=1)
         self.assertIn("worker", stderr.lower())
         self.interrupt(first)
@@ -287,7 +287,7 @@ class DownloadQueueTests(unittest.TestCase):
     def test_corrupt_state_is_preserved_and_rejected(self):
         state = self.root / "state.json"
         state.write_text("{not JSON")
-        process = self.start("--state-file", str(state), watch=False)
+        process = self.start("--state-file", str(state), tail=False)
         self.finish_process(process, expected=1)
         self.assertEqual(state.read_text(), "{not JSON")
         self.assertEqual(self.calls(), [])
@@ -295,9 +295,7 @@ class DownloadQueueTests(unittest.TestCase):
     def test_downloader_options_are_forwarded_as_arguments(self):
         self.links.write_text("https://example.com/?a=1&b=2\n")
         self.finish_process(
-            self.start(
-                "--", "-P", "directory with spaces", "--no-playlist", watch=False
-            )
+            self.start("--", "-P", "directory with spaces", "--no-playlist", tail=False)
         )
         args = self.calls()[0]["args"]
         self.assertIn("directory with spaces", args)
@@ -312,7 +310,7 @@ class DownloadQueueTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(help_result.returncode, 0, help_result.stderr)
-        self.assertIn("--watch", help_result.stdout)
+        self.assertIn("--tail", help_result.stdout)
         for option, value in [
             ("--interval", "0"),
             ("--interval", "nan"),
@@ -320,7 +318,7 @@ class DownloadQueueTests(unittest.TestCase):
             ("--retry-delay", "-1"),
             ("--max-attempts", "0"),
         ]:
-            process = self.start(option, value, watch=False)
+            process = self.start(option, value, tail=False)
             stdout, stderr = process.communicate(timeout=5)
             self.assertNotEqual(process.returncode, 0, stdout + stderr)
         self.assertEqual(self.calls(), [])
@@ -347,14 +345,14 @@ class DownloadQueueTests(unittest.TestCase):
             "-V",
             "-U",
         ):
-            process = self.start("--", option, watch=False)
+            process = self.start("--", option, tail=False)
             stdout, stderr = process.communicate(timeout=5)
             self.assertNotEqual(process.returncode, 0, stdout + stderr)
         self.assertEqual(self.calls(), [])
 
     def test_inherited_non_download_config_is_disabled(self):
         self.links.write_text("https://example.com/one\n")
-        self.finish_process(self.start(watch=False))
+        self.finish_process(self.start(tail=False))
         args = self.calls()[0]["args"]
         self.assertIn("--no-simulate", args)
         self.assertIn("--no-batch-file", args)
@@ -365,7 +363,7 @@ class DownloadQueueTests(unittest.TestCase):
         self.links.write_text("https://example.com/one\n")
         original = self.links.read_bytes()
         for option in ("--state-file", "--archive"):
-            process = self.start(option, str(self.links), watch=False)
+            process = self.start(option, str(self.links), tail=False)
             stdout, stderr = process.communicate(timeout=5)
             self.assertNotEqual(process.returncode, 0, stdout + stderr)
             self.assertEqual(self.links.read_bytes(), original)

@@ -171,7 +171,7 @@ def run(args, extra_args):
             try:
                 urls = read_urls(args.file)
             except FileNotFoundError:
-                if not args.watch:
+                if not args.tail:
                     raise
                 pause(args.interval)
                 continue
@@ -206,7 +206,7 @@ def run(args, extra_args):
             retryable = [
                 url for url in pending if attempts.get(url, 0) < args.max_attempts
             ]
-            if not args.watch and not retryable:
+            if not args.tail and not retryable:
                 return 1 if pending else 0
             wait = args.interval
             if retryable:
@@ -272,7 +272,7 @@ def validate_downloader_args(parser, extra_args):
 def main():
     parser = argparse.ArgumentParser(
         description="Download URLs from FILE, remembering successfully completed URLs.",
-        epilog="Use --watch to wait for new links. Blank lines and lines starting with "
+        epilog="Use --tail to wait for new links. Blank lines and lines starting with "
         "#, ; or ] are ignored. Pass yt-dlp options after --. Failed URLs are retried "
         "at most --max-attempts times per invocation. Remove a link to cancel its "
         "pending retries; an active download finishes. Download-only mode does not "
@@ -280,10 +280,12 @@ def main():
         "Simulation, listing, ignored errors, batch/archive overrides, config "
         "files, self-updates and alias declarations are rejected. Pass short "
         "options and their values separately (for example: -f best). Example: "
-        "dl-vid --watch videos.txt -- --format bestaudio",
+        "dl-vid --tail videos.txt -- --format bestaudio",
     )
     parser.add_argument("file", type=Path, metavar="FILE", help="UTF-8 URL list")
-    parser.add_argument("--watch", action="store_true", help="keep watching at EOF")
+    parser.add_argument(
+        "--tail", action="store_true", help="keep following the link list at EOF"
+    )
     parser.add_argument(
         "--interval", type=positive_float, default=2, help="poll seconds (default: 2)"
     )

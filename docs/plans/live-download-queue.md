@@ -5,7 +5,7 @@ Installed commands are tracked using the `git-scripts` bare repository.
 Development and verification happen in a writable checkout before installation
 in `/usr/local/bin`.
 
-- [x] Implement `dl-vid --watch FILE`, rereading the path after downloads and while idle so appended links and editor file replacements are recognized.
+- [x] Implement `dl-vid --tail FILE`, rereading the path after downloads and while idle so appended links and editor file replacements are recognized.
 - [x] Support ordinary batch mode, comments, duplicate links, paths with spaces, and passing downloader options after `--`.
 - [x] Persist completed URL entries separately from yt-dlp's download archive, bound retries, prevent simultaneous workers for the same state, and propagate Ctrl-C to the active downloader.
 - [x] Verify changes during an active download, waiting at EOF, atomic editor saves, restart deduplication, controlled failures, and interruption using a fake downloader.
@@ -25,13 +25,13 @@ download complete. Installation may require the user's sudo access.
 
 ```bash
 # Keep downloading as new links are saved to the file.
-dl-vid --watch links.txt
+dl-vid --tail links.txt
 
 # Process the file and exit when the queue and bounded retries are finished.
 dl-vid links.txt
 
 # Pass ordinary yt-dlp options after the separator.
-dl-vid --watch links.txt -- -P ~/Videos --no-playlist
+dl-vid --tail links.txt -- -P ~/Videos --no-playlist
 ```
 
 The default sidecars are `links.txt.dl-vid.json` (successful URL entries),

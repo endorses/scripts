@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""Download a changing URL list with durable completion tracking."""
+
+import argparse
+import fcntl
+import json
+import math
+import os
+import re
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+interrupted = False
+
+
+def request_stop(signum, frame):
+    global interrupted
+    interrupted = True
+
+
+def pause(seconds):
+    deadline = time.monotonic() + seconds
+    while not interrupted:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(remaining, 0.2))
+
+
+def positive_float(value):
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return number
+
+
+def nonnegative_float(value):
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("must be a finite nonnegative number")
+    return number
+
+
+def positive_integer(value):
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be an integer greater than zero")
+    return number
+
+
+def read_urls(path):
+    urls = []
+    seen = set()
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        url = re.split(r"\s#", line, maxsplit=1)[0].strip()
+        if not url or url.startswith(("#", ";", "]")) or url in seen:
+            continue
+        urls.append(url)
+        seen.add(url)
+    return urls
+
+
+def load_completed(path):
+    try:
+        with path.open(encoding="utf-8") as stream:
+            state = json.load(stream)
+    except FileNotFoundError:
+        return set()
+    if (
+        not isinstance(state, dict)
+        or type(state.get("version")) is not int
+        or state["version"] != 1
+        or not isinstance(state.get("completed"), list)
+        or any(not isinstance(url, str) for url in state["completed"])
+    ):
+        raise ValueError(
+            f"invalid or unsupported state in {path}; leaving it unchanged"
+        )
+    return set(state["completed"])
+
+
+def save_completed(path, completed):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump({"version": 1, "completed": sorted(completed)}, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def download(url, archive, extra_args):
+    print(f"Downloading: {url}", flush=True)
+    child = subprocess.Popen(
+        [
+            "yt-dlp",
+            "--download-archive",
+            str(archive),
+            *extra_args,
+            "--ignore-config",
+            "--no-batch-file",
+            "--no-simulate",
+            "--abort-on-error",
+            "--",
+            url,
+        ],
+        start_new_session=True,
+    )
+    try:
+        while not interrupted:
+            try:
+                return child.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                pass
+        return None
+    finally:
+        # Check the entire group: the parent can exit while a child ignores TERM.
+        if interrupted or child.poll() is None:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                child.poll()  # Reap the parent so it does not keep the group alive.
+                try:
+                    os.killpg(child.pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            child.wait()
+
+
+def run(args, extra_args):
+    state_path = args.state_file or Path(str(args.file) + ".dl-vid.json")
+    archive = args.archive or Path(str(args.file) + ".dl-vid.archive")
+    lock_path = Path(str(state_path) + ".lock")
+    paths = [args.file, state_path, archive, lock_path]
+    if len({path.resolve() for path in paths}) != len(paths):
+        raise ValueError("FILE, state, archive and lock paths must be distinct")
+    with lock_path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError(f"another worker is using state {state_path}") from None
+        completed = load_completed(state_path)
+        attempts = {}
+        retry_at = {}
+        while not interrupted:
+            try:
+                urls = read_urls(args.file)
+            except FileNotFoundError:
+                if not args.watch:
+                    raise
+                pause(args.interval)
+                continue
+            pending = [url for url in urls if url not in completed]
+            now = time.monotonic()
+            ready = next(
+                (
+                    url
+                    for url in pending
+                    if attempts.get(url, 0) < args.max_attempts
+                    and retry_at.get(url, 0) <= now
+                ),
+                None,
+            )
+            if ready is not None:
+                attempts[ready] = attempts.get(ready, 0) + 1
+                result = download(ready, archive, extra_args)
+                if interrupted:
+                    break
+                if result == 0:
+                    completed.add(ready)
+                    save_completed(state_path, completed)
+                else:
+                    retry_at[ready] = time.monotonic() + args.retry_delay
+                    print(
+                        f"Download failed ({result}): {ready} "
+                        f"[attempt {attempts[ready]}/{args.max_attempts}]",
+                        file=sys.stderr,
+                    )
+                # Always reopen the filename after a download, including failures.
+                continue
+            retryable = [
+                url for url in pending if attempts.get(url, 0) < args.max_attempts
+            ]
+            if not args.watch and not retryable:
+                return 1 if pending else 0
+            wait = args.interval
+            if retryable:
+                wait = min(
+                    wait, max(0, min(retry_at.get(url, 0) for url in retryable) - now)
+                )
+            pause(wait)
+        return 130
+
+
+def validate_downloader_args(parser, extra_args):
+    # yt-dlp accepts long option abbreviations and attached short option values.
+    # These options would replace our archive or add an independent URL queue.
+    managed = (
+        "--batch-file",
+        "--no-batch-file",
+        "--config-locations",
+        "--alias",
+        "--ignore-errors",
+        "--flat-playlist",
+        "--load-info-json",
+        "--download-archive",
+        "--no-download-archive",
+        "--simulate",
+        "--skip-download",
+        "--no-download",
+        "--list-formats",
+        "--list-subs",
+        "--list-thumbnails",
+        "--list-extractors",
+        "--extractor-descriptions",
+        "--list-impersonate-targets",
+        "--dump-user-agent",
+        "--help",
+        "--version",
+        "--update",
+        "--update-to",
+    )
+    for argument in extra_args:
+        if (
+            argument.startswith("-")
+            and not argument.startswith("--")
+            and len(argument) > 2
+        ):
+            parser.error("pass short options and their values separately")
+        option = argument.split("=", 1)[0]
+        if (
+            option == "--"
+            or (
+                option.startswith("--")
+                and any(name.startswith(option) for name in managed)
+            )
+            or (
+                not argument.startswith("--")
+                and argument.startswith(("-a", "-s", "-F", "-h", "-i", "-V", "-U"))
+            )
+        ):
+            parser.error(
+                f"downloader option {option!r} conflicts with the managed queue/archive"
+            )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Download URLs from FILE, remembering successfully completed URLs.",
+        epilog="Use --watch to wait for new links. Blank lines and lines starting with "
+        "#, ; or ] are ignored. Pass yt-dlp options after --. Failed URLs are retried "
+        "at most --max-attempts times per invocation. Remove a link to cancel its "
+        "pending retries; an active download finishes. Download-only mode does not "
+        "load yt-dlp config files: pass cookies, format and other settings after --. "
+        "Simulation, listing, ignored errors, batch/archive overrides, config "
+        "files, self-updates and alias declarations are rejected. Pass short "
+        "options and their values separately (for example: -f best). Example: "
+        "dl-vid --watch videos.txt -- --format bestaudio",
+    )
+    parser.add_argument("file", type=Path, metavar="FILE", help="UTF-8 URL list")
+    parser.add_argument("--watch", action="store_true", help="keep watching at EOF")
+    parser.add_argument(
+        "--interval", type=positive_float, default=2, help="poll seconds (default: 2)"
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=nonnegative_float,
+        default=30,
+        help="retry seconds (default: 30)",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=positive_integer,
+        default=3,
+        help="attempts per URL per invocation (default: 3)",
+    )
+    parser.add_argument(
+        "--state-file", type=Path, help="completed URLs (default: FILE.dl-vid.json)"
+    )
+    parser.add_argument(
+        "--archive", type=Path, help="yt-dlp archive (default: FILE.dl-vid.archive)"
+    )
+    argv = sys.argv[1:]
+    separator = argv.index("--") if "--" in argv else len(argv)
+    args = parser.parse_args(argv[:separator])
+    extra_args = argv[separator + 1 :]
+    validate_downloader_args(parser, extra_args)
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+    try:
+        return run(args, extra_args)
+    except (OSError, ValueError) as error:
+        print(f"dl-vid: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
